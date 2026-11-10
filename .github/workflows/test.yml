@@ -1,0 +1,70 @@
+name: Functional test
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  functional-test:
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          # Base jetable du runner : aucun mot de passe dans le dépôt.
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: "yes"
+          MARIADB_DATABASE: test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Start the application
+        env:
+          DB_HOST: 127.0.0.1
+          DB_USER: root
+          DB_NAME: test
+        run: nohup python app.py > app.log 2>&1 &
+
+      - name: Wait for the application
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null http://127.0.0.1:5000/; then exit 0; fi
+            sleep 1
+          done
+          echo "L'application n'a pas démarré" >&2
+          cat app.log
+          exit 1
+
+      - name: Check the home page reports a database connection
+        run: |
+          response="$(curl -fsS http://127.0.0.1:5000/)"
+          echo "Réponse : $response"
+          if [ "$response" != "Database Connection Status: Connected" ]; then
+            echo "Échec : la connexion à la base n'est pas établie" >&2
+            cat app.log
+            exit 1
+          fi
+
+      - name: Show application logs on failure
+        if: failure()
+        run: cat app.log
